@@ -1,0 +1,25 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "PA",
+        "description": "Where the PA is, and the token from its .env.",
+        "data": {
+          "url": "Address",
+          "token": "Token"
+        },
+        "data_description": {
+          "url": "The address the PA answers on, such as http://192.168.1.10:7870. Not the socket: the socket is found from it.",
+          "token": "PA_SERVER_TOKEN from the PA's .env."
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Could not reach the PA at that address.",
+      "invalid_auth": "The PA refused that token."
+    },
+    "abort": {
+      "already_configured": "That PA is already set up."
+    }
+  }
+}
