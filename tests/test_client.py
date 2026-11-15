@@ -39,8 +39,11 @@ class StubPA:
         hang_up: bool = False,
         silent: bool = False,
         health: object = None,
+        cards: tuple[dict, ...] = (),
     ) -> None:
         self.pieces = pieces
+        # Sent after `done`, as the server does: a turn that was interrupted draws nothing.
+        self.cards = cards
         self.expects_reply = expects_reply
         self.conversation_id = conversation_id
         self.refuse = refuse
@@ -104,8 +107,13 @@ class StubPA:
                         turn_id=turn_id,
                         text="".join(self.pieces),
                         expects_reply=self.expects_reply,
+                        cards=len(self.cards),
                     )
                 )
+                for card in self.cards:
+                    await socket.send_json(
+                        wire.message("CardMessage", turn_id=turn_id, card=card)
+                    )
         return socket
 
 
@@ -168,19 +176,45 @@ def test_the_conversation_id_is_the_pas() -> None:
     with_pa(run)
 
 
-def test_it_says_hello_with_nothing_but_words() -> None:
-    """The client can neither act nor show a card, and the PA is told so by omission.
+def test_it_says_hello_declaring_only_that_a_card_becomes_a_picture() -> None:
+    """No action capability at all, and one show capability that is deliberately not `cards`.
 
-    Declaring a capability it does not have is the failure that costs a turn: the PA would offer a
-    card to a satellite with no screen, be refused, and answer in words it had already spent a turn
-    deciding on.
+    An action it cannot perform is the failure that costs a turn: the PA would offer one, be
+    refused, and answer in words it had already spent a turn deciding on. And `cards_elsewhere`
+    rather than `cards` because the difference is what the PA is *told* to do — a picture on a
+    screen in the room may never be looked at, so the answer has to stand on its own instead of
+    staying short for the card to carry.
     """
 
     async def run(stub: StubPA) -> None:
         await PAClient(stub.url, TOKEN).turn("hello").reply()
         hello = next(event for event in stub.seen if event["type"] == "hello")
-        assert hello["capabilities"] == []
+        assert hello["capabilities"] == ["cards_elsewhere"]
         assert hello["device"] == "Home Assistant"
+
+    with_pa(run)
+
+
+def test_a_card_that_arrives_after_done_is_collected() -> None:
+    """The cards follow `done`, which is the reason `done` says how many to expect.
+
+    A client that returned the moment the words were done would never see one, and a client that
+    waited instead would pay a guess on every turn that has none.
+    """
+
+    async def run(stub: StubPA) -> None:
+        turn = PAClient(stub.url, TOKEN).turn("what is waiting on me?")
+        await turn.reply()
+        assert [card["kind"] for card in turn.cards] == ["list"]
+
+    with_pa(run, cards=({"kind": "list", "rows": [{"title": "a", "reason": "b"}]},))
+
+
+def test_a_turn_with_no_card_comes_back_with_none() -> None:
+    async def run(stub: StubPA) -> None:
+        turn = PAClient(stub.url, TOKEN).turn("hello")
+        await turn.reply()
+        assert turn.cards == []
 
     with_pa(run)
 

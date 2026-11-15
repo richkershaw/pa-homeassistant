@@ -68,6 +68,56 @@ closing on a sentence that happened not to end in `?`.
 this turn is spoken aloud with nothing to tap, and it never spends a turn offering a card to a
 screen that is not there.
 
+## A card becomes a picture
+
+A card — what is waiting on you, a day's times, a draft — is what the PA draws *beside* an answer in
+its own apps. Home Assistant has no card client, so each one is turned into a picture and announced
+on the bus, to be sent wherever you can see it.
+
+**The component declares `cards_elsewhere` and not `cards`, and that is the one thing here that
+changes what you hear.** The PA takes the first as *"this card becomes a picture on a screen in the
+room"* — so it is told the answer has to stand on its own, because the picture may be on a television
+that is off. The second would have told it the card carries the detail and the spoken answer can stay
+short, which is right on a Mac and wrong in a kitchen.
+
+Each card is drawn into `config/www/pa/`, which Home Assistant serves at `/local/pa/`, and then:
+
+```yaml
+event_type: pa_visual
+data:
+  image: /local/pa/pa-20261115-211732-01M7DTVY-0.png
+  kind: pending                  # which card it was
+  title: Pending things
+  spoken: Five are really waiting on you. …    # what was said, for the notification's message
+  conversation_id: 01M7DTVYAYG3T5MKX0KAGC6A41
+  device_id: 4f2a…               # the satellite that asked, so an automation can find the room
+```
+
+The event is all this does; what happens next is an automation's business. The shape for the one it
+was written for — the television that is on in the room that asked:
+
+```yaml
+triggers:
+  - trigger: event
+    event_type: pa_visual
+conditions:
+  - condition: template
+    value_template: "{{ area_id(trigger.event.data.device_id) is not none }}"
+actions:
+  - action: notify.<the television in that area>
+    data:
+      message: "{{ trigger.event.data.spoken }}"
+      data:
+        image: "{{ trigger.event.data.image }}"
+```
+
+Two things worth knowing. **Pillow needs no `requirements` entry** — Home Assistant core depends on
+it already, which is why the drawing is done in the component rather than anywhere else. And the
+**font travels with the component** (`custom_components/pa/fonts/`): Pillow's own default has no `£`
+and no em dash, and the PA writes both in almost every answer. See the note beside it.
+
+Only the newest 20 pictures are kept; the rest are pruned as they age.
+
 ## What it does not do
 
 **No home control.** The entity deliberately does not declare `CONTROL`: the PA cannot run Home

@@ -30,6 +30,7 @@ TYPES = {
     "Recent": "recent",
     "Delta": "delta",
     "Done": "done",
+    "CardMessage": "card",
     "Failure": "error",
 }
 """Each message and the `type` it carries. Checked against the PA's models when one is here."""

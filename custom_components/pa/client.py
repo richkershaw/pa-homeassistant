@@ -21,9 +21,15 @@ import asyncio
 import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from typing import Any
 from uuid import uuid4
 
 import aiohttp
+
+# The capability the PA takes as "a card here becomes a picture on a screen somewhere else"
+# (`server/cards.py`, `ELSEWHERE`). Declared instead of `cards`, because the difference is not
+# bookkeeping: it is what the PA is told to do with the answer.
+CARDS_ELSEWHERE = "cards_elsewhere"
 
 # The path the PA serves its socket on (`server/config.py`, `WS_PATH`). Fixed rather than
 # configurable: it is part of the PA's own contract, and a second place to get it wrong buys
@@ -139,6 +145,8 @@ class PATurn:
         self.conversation_id = conversation_id
         self.text = ""
         self.expects_reply = False
+        self.cards: list[dict[str, Any]] = []
+        """What the PA put beside its answer, in the order it sent them. Empty for most turns."""
 
     async def pieces(self) -> AsyncIterator[str]:
         """The answer as the PA writes it, then nothing.
@@ -153,6 +161,9 @@ class PATurn:
         # WebSocket's reads, which is why a wrong address hung for ever instead of failing: the
         # reverse proxy took the upgrade, was not the PA, and the read never timed out.
         timeout = aiohttp.ClientTimeout(total=None, sock_connect=10)
+        # The answer came, and how many cards are still to come for it. See the `done` branch.
+        answered = False
+        waiting = 0
         try:
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.ws_connect(
@@ -165,7 +176,10 @@ class PATurn:
                         # and the PA is told it in as many words — it writes the turn off as one
                         # that must be answered aloud, with nothing to tap, and does not offer a
                         # card or an action it would be refused.
-                        "capabilities": [],
+                        # `cards_elsewhere` and not `cards`: what happens to a card here is that
+                        # it becomes a picture for a screen in the room, which may not be on — so
+                        # the PA is told the answer has to stand on its own rather than stay short.
+                        "capabilities": [CARDS_ELSEWHERE],
                         "conversation_id": self.conversation_id,
                     })
                     await socket.send_json({"type": "final", "turn_id": turn_id, "text": self._text})
@@ -211,7 +225,18 @@ class PATurn:
                             # The whole text is authoritative — it is what the transcript holds.
                             self.text = event.get("text") or self.text
                             self.expects_reply = bool(event.get("expects_reply"))
-                            return
+                            # The answer is complete. If no card follows, that is the whole turn
+                            # and there is nothing to wait for; if some do, `done` has already
+                            # said how many, so this reads for exactly that long and no longer.
+                            answered = True
+                            waiting = int(event.get("cards") or 0)
+                            if not waiting:
+                                return
+                        elif kind == "card" and event.get("turn_id") == turn_id:
+                            self.cards.append(event.get("card") or {})
+                            waiting -= 1
+                            if waiting <= 0:
+                                return
                         elif kind == "cancelled" and event.get("turn_id") == turn_id:
                             raise PAError("the PA dropped that answer")
                         elif kind == "error":
@@ -219,9 +244,12 @@ class PATurn:
         except aiohttp.ClientError as err:
             raise PAError(f"could not reach the PA at {self._client.socket_url}: {err}") from err
 
-        # Only reached when the socket closed before the answer was done: the turn returned from
-        # inside the loop otherwise. Silent would be the wrong answer — the caller asked a question
-        # and nothing said why there is no reply to it.
+        if answered:
+            # The words came and only the cards it promised did not. That is a turn that worked,
+            # and refusing it would throw away an answer the caller already has.
+            return
+        # Only reached when the socket closed before the answer was done. Silent would be the wrong
+        # answer — the caller asked a question and nothing said why there is no reply to it.
         raise PAError("the PA closed the connection before it answered")
 
     async def reply(self) -> Reply:

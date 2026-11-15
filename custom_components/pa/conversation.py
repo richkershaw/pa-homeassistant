@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import logging
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, Literal
 
 from homeassistant.components import conversation
@@ -29,8 +31,64 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.util import ulid as ulid_util
 
 from .client import PAClient, PAError, PATurn
+from .visual import Visual, render, visual_of
 
 _LOGGER = logging.getLogger(__name__)
+
+EVENT = "pa_visual"
+"""Fired when the PA put something visual beside an answer.
+
+A card cannot be shown here — Home Assistant has no card client — so it is turned into a picture and
+handed on as a file, and this is the bus event that says so. What an automation does with it is its
+own business: the one it was written for sends the picture to whichever television is on in the
+room, so the answer is seen as well as heard.
+"""
+
+EVENT_FOLDER = "pa"
+"""Where the pictures go under Home Assistant's `www`, served at `/local/pa/`.
+
+Ours, and named here so it can be cleared: nothing else writes there, and the newest few are kept
+while the rest are pruned by age.
+"""
+
+KEEP_PICTURES = 20
+"""How many to keep. A picture is a moment, and nobody goes looking for last week's."""
+
+
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
+) -> None:
+    """Add the one agent this entry is."""
+    async_add_entities([PAConversationEntity(entry)])
+
+
+def _write(folder: str, visual: Visual, name: str) -> Path:
+    """Draw the picture and put it where Home Assistant serves `/local` from.
+
+    Runs in an executor — drawing is arithmetic on a bitmap, not something to hold the event loop
+    for — and does not touch Home Assistant at all, which is why it is a module function.
+    """
+    where = Path(folder)
+    where.mkdir(parents=True, exist_ok=True)
+    path = where / name
+    path.write_bytes(render(visual))
+    _prune(where)
+    return path
+
+
+def _prune(where: Path, keep: int = KEEP_PICTURES) -> None:
+    """Leave the newest few, so a year of answers is not a folder nobody will ever clear."""
+    pictures = sorted(where.glob("*.png"), key=lambda one: one.stat().st_mtime, reverse=True)
+    for stale in pictures[keep:]:
+        stale.unlink(missing_ok=True)
+
+
+def _picture_name(conversation_id: str, number: int) -> str:
+    """A name that says when, so the folder sorts by time and the newest is obvious."""
+    stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    return f"pa-{stamp}-{conversation_id[:8]}-{number}.png"
 
 
 async def async_setup_entry(
@@ -73,6 +131,8 @@ class PAConversationEntity(conversation.ConversationEntity):
         except PAError as err:
             _LOGGER.warning("the PA could not answer: %s", err)
             return _failed(user_input, conversation_id, str(err))
+        if turn.cards:
+            await self._publish(turn, user_input, conversation_id)
         return _result(
             user_input, reply.conversation_id or conversation_id, reply.text, reply.expects_reply
         )
@@ -91,12 +151,61 @@ class PAConversationEntity(conversation.ConversationEntity):
         except PAError as err:
             _LOGGER.warning("the PA could not answer: %s", err)
             return _failed(user_input, conversation_id, str(err))
+        if turn.cards:
+            # After the words, and before the result: the answer is already complete, and a picture
+            # that cannot be drawn must not cost the answer it belongs to.
+            await self._publish(turn, user_input, conversation_id)
         return _result(
             user_input,
             turn.conversation_id or conversation_id,
             turn.text,
             turn.expects_reply,
         )
+
+    async def _publish(
+        self,
+        turn: PATurn,
+        user_input: conversation.ConversationInput,
+        conversation_id: str,
+    ) -> None:
+        """Turn each card into a picture and say on the bus that there is one.
+
+        The picture is the only way a card reaches a room: it arrives here as JSON, and this makes a
+        file of it — in `www/pa`, which Home Assistant serves at `/local/pa/`, so the address is one
+        the app and a television already know, from anywhere.
+
+        Nothing here is allowed to fail the turn. A card that cannot be drawn or written is logged
+        and skipped, because the answer it belongs to has already been given and is the point.
+        """
+        for number, card in enumerate(turn.cards):
+            visual = visual_of(card)
+            if visual is None:
+                continue
+            try:
+                written = await self.hass.async_add_executor_job(
+                    _write,
+                    self.hass.config.path("www", EVENT_FOLDER),
+                    visual,
+                    _picture_name(conversation_id, number),
+                )
+            except OSError as err:
+                _LOGGER.warning("could not write the PA's picture: %s", err)
+                continue
+            self.hass.bus.async_fire(
+                EVENT,
+                {
+                    "image": f"/local/{EVENT_FOLDER}/{written.name}",
+                    "kind": card.get("kind", ""),
+                    "title": visual.title,
+                    # The words the answer was spoken with, so a notification can carry both
+                    # without the automation going back to the conversation for them.
+                    "spoken": turn.text,
+                    "conversation_id": conversation_id,
+                    # Which satellite asked, so an automation can find the room. None for a typed
+                    # turn in Assist, which is the honest answer: it was said in no room.
+                    "device_id": user_input.device_id,
+                },
+            )
 
 
 async def _deltas(turn: PATurn) -> AsyncIterator[dict[str, Any]]:
