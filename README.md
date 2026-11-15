@@ -14,6 +14,10 @@ what it was written for.
 > private; nothing in this repository is a secret — no address, no token, and no code that reaches
 > anything but the server you configure.
 
+The icon is the app's own, in `custom_components/pa/brand/` — the same blob, at the sizes Home
+Assistant's conventions ask for and with the dark cut beside it, rather than a second drawing of it
+that could drift.
+
 ## Installing
 
 **With HACS.** HACS → Integrations → the ⋮ menu → **Custom repositories**, add
