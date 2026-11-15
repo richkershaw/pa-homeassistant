@@ -80,36 +80,53 @@ room"* — so it is told the answer has to stand on its own, because the picture
 that is off. The second would have told it the card carries the detail and the spoken answer can stay
 short, which is right on a Mac and wrong in a kitchen.
 
-Each card is drawn into `config/www/pa/`, which Home Assistant serves at `/local/pa/`, and then:
+Each card is drawn into `config/www/pa/`, which Home Assistant serves at `/local/pa/`, and then
+announced **two ways** — because one of them is what an automation editor can offer you and the other
+is what anything else can listen to.
 
-```yaml
-event_type: pa_visual
-data:
-  image: /local/pa/pa-20261115-211732-01M7DTVY-0.png
-  kind: pending                  # which card it was
-  title: Pending things
-  spoken: Five are really waiting on you. …    # what was said, for the notification's message
-  conversation_id: 01M7DTVYAYG3T5MKX0KAGC6A41
-  device_id: 4f2a…               # the satellite that asked, so an automation can find the room
-```
+### `event.pa_visual`, the one to point at
 
-The event is all this does; what happens next is an automation's business. The shape for the one it
-was written for — the television that is on in the room that asked:
+An **event entity** — Home Assistant's own way of saying *something happened* — so it appears in the
+entity picker, and a state trigger on it fires whenever the PA shows something. Its state is **when**
+it last happened, `event_type` is **which kind of card** it was, and the rest is on the attributes:
+
+| attribute | |
+| --- | --- |
+| `image` | `/local/pa/pa-20261115-211732-….png` — what a notification's `image:` wants |
+| `spoken` | the words the answer was spoken with, for the notification's `message:` |
+| `event_type` | `list`, `schedule`, `draft`, `links`, `files` or `pending` |
+| `title` | the card's own heading, or the kind's default |
+| `device_id` | the satellite that asked — how an automation finds the room |
+| `conversation_id` | which conversation it belonged to |
+
+The shape for the one it was written for — the television that is on in the room that asked:
 
 ```yaml
 triggers:
-  - trigger: event
-    event_type: pa_visual
+  - trigger: state
+    entity_id: event.pa_visual
+    not_to: ["unknown", "unavailable"]
 conditions:
+  # The room: which satellite asked, and which area it is in. None for a turn typed into Assist,
+  # which was said in no room and has no television to be sent to.
   - condition: template
-    value_template: "{{ area_id(trigger.event.data.device_id) is not none }}"
+    value_template: "{{ area_id(trigger.to_state.attributes.device_id) is not none }}"
+  # Only the cards worth seeing from where you are: drop the drafts, say.
+  - condition: template
+    value_template: "{{ trigger.to_state.attributes.event_type != 'draft' }}"
 actions:
   - action: notify.<the television in that area>
     data:
-      message: "{{ trigger.event.data.spoken }}"
+      message: "{{ trigger.to_state.attributes.spoken }}"
       data:
-        image: "{{ trigger.event.data.image }}"
+        image: "{{ trigger.to_state.attributes.image }}"
 ```
+
+### `pa_visual`, the bus event
+
+The same thing as a bus event, for a trigger that is typed rather than picked — and for anything else
+that wants to subscribe. Its `event_type` is `pa_visual` and its data is the attributes above, under
+`trigger.event.data`.
 
 Two things worth knowing. **Pillow needs no `requirements` entry** — Home Assistant core depends on
 it already, which is why the drawing is done in the component rather than anywhere else. And the

@@ -9,9 +9,11 @@ from __future__ import annotations
 
 from io import BytesIO
 
+import pytest
 from PIL import Image
 
 import visual
+import wire
 from visual import Visual, _wrap, render, visual_of
 
 LIST = {
@@ -76,6 +78,19 @@ def test_a_pending_row_says_whose_move_and_what_could_be_picked() -> None:
     assert headline == "Thomas Barratt · Prefequity"
     assert "The NDA has not gone." in detail
     assert "Send the NDA, Snooze a week" in detail
+
+
+@pytest.mark.skipif(wire.cards is None, reason="no PA checkout here to check the kinds against")
+def test_the_kinds_are_the_pas() -> None:
+    """A kind added there and not here is a picture nobody can trigger on.
+
+    The event entity's `event_types` is a closed set — Home Assistant refuses a type it was never
+    told about — so a card the PA can draw and this does not know would arrive, be drawn and
+    announced, and leave the entity with no event.
+    """
+    assert sorted(visual.KINDS) == sorted(wire.cards.KINDS), (
+        "the card kinds have drifted from the PA's own list"
+    )
 
 
 def test_a_card_with_nothing_in_it_is_not_a_picture() -> None:

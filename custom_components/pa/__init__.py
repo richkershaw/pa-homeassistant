@@ -17,7 +17,7 @@ from homeassistant.core import HomeAssistant
 from .client import PAClient
 from .const import DOMAIN
 
-PLATFORMS = [Platform.CONVERSATION]
+PLATFORMS = [Platform.CONVERSATION, Platform.EVENT]
 
 __all__ = ["DOMAIN", "async_setup_entry", "async_unload_entry"]
 

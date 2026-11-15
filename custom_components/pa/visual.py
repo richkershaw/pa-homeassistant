@@ -58,6 +58,14 @@ MUTED = (168, 159, 147)
 DIM = (143, 134, 122)
 CLAY = (240, 185, 163)
 
+KINDS = ("list", "schedule", "draft", "links", "files", "pending")
+"""Every kind of card, in the order the server declares them (`server/cards.py`, `KINDS`).
+
+Here rather than in the event entity, because this is where the kinds are *understood* — `visual_of`
+has a branch for each — and because it has to be readable without Home Assistant, so a test can hold
+it against the PA's own list and fail when the two drift.
+"""
+
 DEFAULT_TITLES = {
     "list": "Waiting on you",
     "schedule": "Today",
