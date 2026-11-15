@@ -37,12 +37,18 @@ class StubPA:
         conversation_id: str = "conv-1",
         refuse: str = "",
         hang_up: bool = False,
+        silent: bool = False,
+        health: object = None,
     ) -> None:
         self.pieces = pieces
         self.expects_reply = expects_reply
         self.conversation_id = conversation_id
         self.refuse = refuse
         self.hang_up = hang_up
+        # Accept the upgrade and then say nothing at all — what a socket that is not the PA's does.
+        self.silent = silent
+        # A string is served as text, which is what a page that is not the PA answers with.
+        self.health_body = {"status": "ok"} if health is None else health
         self.seen: list[dict] = []
         self._runner: web.AppRunner | None = None
         self.url = ""
@@ -65,7 +71,9 @@ class StubPA:
     async def _health(self, request: web.Request) -> web.Response:
         if request.headers.get("Authorization") != f"Bearer {TOKEN}":
             return web.Response(status=401)
-        return web.json_response({"ok": True})
+        if isinstance(self.health_body, str):
+            return web.Response(text=self.health_body, content_type="text/html")
+        return web.json_response(self.health_body)  # type: ignore[arg-type]
 
     async def _socket(self, request: web.Request) -> web.WebSocketResponse:
         socket = web.WebSocketResponse()
@@ -80,6 +88,9 @@ class StubPA:
                 await socket.send_json(wire.message("Recent", turns=[]))
             elif event["type"] == "final":
                 turn_id = event["turn_id"]
+                if self.silent:
+                    # Nothing at all, and no close either: the caller has to give up on its own.
+                    continue
                 if self.refuse:
                     await socket.send_json(wire.message("Failure", message=self.refuse))
                     continue
@@ -187,6 +198,59 @@ def test_a_healthy_pa_passes_health() -> None:
         await PAClient(stub.url, TOKEN).health()
 
     with_pa(run)
+
+
+def test_something_else_answering_health_is_refused_and_names_the_port() -> None:
+    """The bug this is written from, exactly.
+
+    A config entry was saved as `http://192.168.1.10` — no port. Port 80 is the reverse proxy, and
+    OpenChamber behind it answers `/health` with 200 and JSON that *also* begins `"status": "ok"`.
+    So a check on the status code passed, and every turn afterwards went to a socket that was not
+    the PA's. The body is what tells them apart, and the message has to say what to do.
+    """
+
+    async def run(stub: StubPA) -> None:
+        with pytest.raises(PAError) as refused:
+            await PAClient(stub.url, TOKEN).health()
+        assert "not the PA" in str(refused.value)
+        assert "7870" in str(refused.value)
+
+    with_pa(
+        run,
+        health={
+            "status": "ok",
+            "timestamp": "2026-11-14T20:17:57.788Z",
+            "openchamberVersion": "2.7.0",
+            "runtime": "web",
+        },
+    )
+
+
+def test_a_health_route_that_is_not_json_is_refused() -> None:
+    """A login page, a proxy's 404 page, anything with a 200 on it."""
+
+    async def run(stub: StubPA) -> None:
+        with pytest.raises(PAError, match="not the PA"):
+            await PAClient(stub.url, TOKEN).health()
+
+    with_pa(run, health="<html><body>Sign in</body></html>")
+
+
+def test_a_socket_that_accepts_and_says_nothing_is_given_up_on() -> None:
+    """The read has a timeout of its own, and that is what a wrong address needs.
+
+    `ClientTimeout(total=…)` alone leaves the read unbounded, so this hung for ever rather than
+    failing: the proxy took the upgrade, was not the PA, and Assist waited until the caller gave
+    up. `total` is unset now — a turn may take as long as it takes — and only a *silence* is
+    limited.
+    """
+
+    async def run(stub: StubPA) -> None:
+        client = PAClient(stub.url, TOKEN, silence=1)
+        with pytest.raises(PAError):
+            await client.turn("hello").reply()
+
+    with_pa(run, silent=True)
 
 
 def test_something_that_is_not_there_is_not_a_token_problem() -> None:

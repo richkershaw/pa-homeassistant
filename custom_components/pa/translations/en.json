@@ -12,14 +12,27 @@
           "url": "The address the PA answers on, such as http://192.168.1.10:7870. Not the socket: the socket is found from it.",
           "token": "PA_SERVER_TOKEN from the PA's .env."
         }
+      },
+      "reconfigure": {
+        "title": "PA",
+        "description": "Correct the address or the token. The check is the same one, and it reads the PA's answer rather than only its status code — which is what stops a missing port being accepted.",
+        "data": {
+          "url": "Address",
+          "token": "Token"
+        },
+        "data_description": {
+          "url": "The address the PA answers on, such as http://192.168.1.10:7870. Not the socket: the socket is found from it.",
+          "token": "PA_SERVER_TOKEN from the PA's .env. Leave it blank to keep the one this is already using."
+        }
       }
     },
     "error": {
-      "cannot_connect": "Could not reach the PA at that address.",
+      "cannot_connect": "That address is not the PA. If it is this machine, it needs the port — usually 7870, as in http://192.168.1.10:7870.",
       "invalid_auth": "The PA refused that token."
     },
     "abort": {
-      "already_configured": "That PA is already set up."
+      "already_configured": "That PA is already set up.",
+      "reconfigure_successful": "The PA's address has been changed."
     }
   }
 }

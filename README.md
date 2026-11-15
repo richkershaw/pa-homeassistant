@@ -24,9 +24,16 @@ HACS and download it, and restart Home Assistant.
 lands at `<config>/custom_components/pa/`, and restart.
 
 Then **Settings → Devices & services → Add integration → PA**, with the address the PA answers on —
-`http://192.168.1.10:7870`, not the socket, which is found from it — and `PA_SERVER_TOKEN` from the
-PA's `server/.env`. The form checks both against the PA's `/health` before it saves, and tells a
-wrong token apart from an address that is not there.
+`http://192.168.1.10:7870`, **port included**, and `PA_SERVER_TOKEN` from the PA's `server/.env`.
+Not the socket: the socket is found from the address.
+
+**The port matters more than it looks.** An address without one is port 80, which is the reverse
+proxy, and what is behind it answers `/health` with a 200 and JSON that also begins
+`"status": "ok"`. So the check reads the *body* — the PA's is exactly `{"status": "ok"}` — and
+refuses anything else, naming the port in the message. It was written from getting that wrong.
+
+If you get it wrong anyway, **Settings → the integration → Reconfigure** corrects it in place:
+the same form and the same check, and the token may be left blank to keep the one it has.
 
 ## Why not Wyoming
 

@@ -17,6 +17,7 @@ apart quietly. Keep it that way: a relative import added here is a test that sto
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -29,9 +30,11 @@ import aiohttp
 # nothing.
 WS_PATH = "/ws"
 
-# Long, because the PA is a model with tools in front of it and a turn can take a while — it
-# checks mail, the CRM and the calendar before it answers. Home Assistant's own callers wait.
-DEFAULT_TIMEOUT = 180
+# How long the PA may say *nothing at all* before the turn is given up on. Not a limit on the turn:
+# the PA writes as it goes and says it is working while it uses a tool, so a real turn sends
+# something every few seconds even when it is slow. This is the length of a silence that means the
+# socket is not the PA's.
+DEFAULT_SILENCE = 120
 
 
 class PAError(RuntimeError):
@@ -60,11 +63,11 @@ class PAClient:
     """A PA server: whether it is there, and how to open a turn with it."""
 
     def __init__(self, url: str, token: str, device: str = "Home Assistant",
-                 timeout: int = DEFAULT_TIMEOUT) -> None:
+                 silence: int = DEFAULT_SILENCE) -> None:
         self.url = url.rstrip("/")
         self.token = token
         self.device = device
-        self.timeout = timeout
+        self.silence = silence
 
     @property
     def socket_url(self) -> str:
@@ -79,6 +82,16 @@ class PAClient:
     async def health(self, session: aiohttp.ClientSession | None = None) -> None:
         """Raise unless the PA answers its health route with this token.
 
+        **The check is on the body, not only on the status code**, and that is not belt and braces.
+        A status of 200 only says *something* is there: on an address with no port on it, that
+        something is the reverse proxy, and OpenChamber behind it answers `/health` with 200 and
+        JSON that also begins `"status": "ok"`. A form that stopped there saved
+        `http://192.168.1.10` — no port, not the PA — and every turn afterwards went to a socket
+        that was not there, which is the failure this is written from.
+
+        The PA's body is exactly `{"status": "ok"}`. Anything else is something else answering, and
+        the message says so and says what to do about it.
+
         A `401` and a connection refused are told apart, because only one of them is a reason to
         re-type the token.
         """
@@ -90,6 +103,15 @@ class PAClient:
                     raise PAAuthError("the PA refused that token")
                 if response.status != 200:
                     raise PAError(f"the PA answered {response.status} on /health")
+                try:
+                    # `content_type=None` so a page served as text/html is parsed and fails here,
+                    # rather than failing inside aiohttp as a client error that reads like a
+                    # network problem. A login page at the address is not the network's fault.
+                    body = await response.json(content_type=None)
+                except ValueError as err:
+                    raise PAError(_not_the_pa(self.url, "it did not answer with JSON")) from err
+                if body != {"status": "ok"}:
+                    raise PAError(_not_the_pa(self.url, f"it said {_brief(body)}"))
         except aiohttp.ClientError as err:
             raise PAError(f"could not reach the PA at {self.url}: {err}") from err
         finally:
@@ -125,7 +147,12 @@ class PATurn:
         does, because a satellite that has been left in silence should be told why.
         """
         turn_id = uuid4().hex
-        timeout = aiohttp.ClientTimeout(total=self._client.timeout, sock_connect=10)
+        # `total` is deliberately unset: a turn is allowed to take as long as it takes, because the
+        # PA is a model with tools in front of it. Only a *silence* is limited, and it is limited
+        # below with `wait_for` rather than here — aiohttp does not apply `sock_read` to a
+        # WebSocket's reads, which is why a wrong address hung for ever instead of failing: the
+        # reverse proxy took the upgrade, was not the PA, and the read never timed out.
+        timeout = aiohttp.ClientTimeout(total=None, sock_connect=10)
         try:
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.ws_connect(
@@ -143,9 +170,28 @@ class PATurn:
                     })
                     await socket.send_json({"type": "final", "turn_id": turn_id, "text": self._text})
 
-                    async for message in socket:
-                        if message.type is not aiohttp.WSMsgType.TEXT:
+                    while True:
+                        try:
+                            message = await asyncio.wait_for(
+                                socket.receive(), timeout=self._client.silence
+                            )
+                        except TimeoutError as err:
+                            raise PAError(
+                                f"the PA said nothing for {self._client.silence}s, so that socket "
+                                "is not answering like the PA's — check the address has its port"
+                            ) from err
+
+                        if message.type in (
+                            aiohttp.WSMsgType.CLOSE,
+                            aiohttp.WSMsgType.CLOSING,
+                            aiohttp.WSMsgType.CLOSED,
+                            aiohttp.WSMsgType.ERROR,
+                        ):
                             break
+                        # Anything that is not text — a ping, a pong — is the transport's business
+                        # and not ours, and must not end the turn.
+                        if message.type is not aiohttp.WSMsgType.TEXT:
+                            continue
                         try:
                             event = json.loads(message.data)
                         except ValueError:
@@ -183,3 +229,21 @@ class PATurn:
         async for _ in self.pieces():
             pass
         return Reply(self.text, self.expects_reply, self.conversation_id)
+
+
+def _not_the_pa(url: str, why: str) -> str:
+    """Said when something else answers the address.
+
+    The fix is nearly always the port, so the message says it rather than leaving someone to work
+    out that a 200 came from the wrong program.
+    """
+    return (
+        f"{url}/health is not the PA — {why}. If that is this machine, the address needs its port: "
+        "usually 7870, as in http://192.168.1.10:7870."
+    )
+
+
+def _brief(body: object) -> str:
+    """A body in a few words, for a message someone has to read and act on."""
+    text = body if isinstance(body, str) else json.dumps(body)
+    return text[:80] + ("…" if len(text) > 80 else "")
